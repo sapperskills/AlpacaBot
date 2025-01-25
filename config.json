@@ -1,0 +1,26 @@
+{
+  "API_KEY": "PKRESHTI55BLZCX1Q6US",
+  "API_SECRET": "xwLRW1eJSNV4pIzES1syESJnOY8AzL4D9B43WZn4",
+  "PAPER": true,
+    "BASE_URL": "https://paper-api.alpaca.markets",
+    
+    "LOG_FILE": "trading_bot.log",
+    "LOG_LEVEL": "INFO",
+    
+    "MEMORY_SIZE": 100000,
+    "BATCH_SIZE": 64,
+    "GAMMA": 0.99,
+    "LEARNING_RATE": 0.0005,
+    "TARGET_UPDATE": 1000,
+    "EPSILON_DECAY": 10000,
+    "ALPHA": 0.6,
+    "BETA_START": 0.4,
+    
+    "CAPITAL_ALLOCATION": 0.10,
+    "MAX_DRAWDOWN_LIMIT": 0.2,
+    "TRAILING_STOP_LOSS": 0.05,
+    "TAKE_PROFIT": 0.05,
+    
+    "SYMBOL_LIST_FILE": "list.txt"
+}
+
