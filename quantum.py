@@ -32,16 +32,15 @@ nest_asyncio.apply()
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from sklearn.cluster import KMeans  # for "cluster improvement"
 
-# Mock Alpaca, purely to keep structure consistent with your normal code
+# Attempt to import Alpaca
 try:
     import alpaca_trade_api as tradeapi
     from alpaca_trade_api.rest import REST, TimeFrame, TimeFrameUnit, APIError
     from alpaca_trade_api.entity import Order as AlpacaOrder
 except ImportError:
-    # If alpaca not installed, mock
+    # If alpaca is not installed, define a simple mock
     class tradeapi:
         class rest:
             class APIError(Exception):
@@ -117,7 +116,6 @@ class WorldNet(nn.Module):
     """
     def __init__(self, latent_dim=512, world_size=1024):
         super(WorldNet, self).__init__()
-        
         self.latent_dim = latent_dim
         self.world_size = world_size
         self.fc1 = nn.Linear(latent_dim, world_size)
@@ -136,7 +134,11 @@ class WorldSimulator:
     """
     This orchestrator uses 'WorldNet' as a 'self-creating neural network'.
     Each step, the 'world' is trained with a contrived cluster-based approach
-    to produce better 'signals' for trading.
+    to produce 'signals' for trading.
+
+    NOTE: We skip backprop on the scikit-learn KMeans results because
+    converting to NumPy breaks the gradient path. We define a simpler "toy_loss"
+    for actual .backward().
     """
     def __init__(self, latent_dim=512, world_size=1024):
         self.latent_dim = latent_dim
@@ -145,80 +147,69 @@ class WorldSimulator:
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
 
     def initialize_state(self) -> torch.Tensor:
-        # Initialize the fictional "world state" as random noise
         with torch.no_grad():
             state = torch.randn((1, self.latent_dim))
         return state
 
     def evolve_world(self, hidden_state: torch.Tensor, steps=1) -> torch.Tensor:
         """
-        Evolve the 'world' by performing cluster improvement in the hidden space.
-        - We'll produce a batch of synthetic states
-        - We cluster them
-        - We pretend the model learns from cluster centers
+        Evolve the 'world':
+          1) KMeans on outputs for demonstration (no .backward() on it)
+          2) A PyTorch "toy_loss" => used for the actual gradient
         """
         for _ in range(steps):
-            # 1) Create synthetic states
             batch_size = 64
-            synthetic_states = torch.randn((batch_size, self.latent_dim))
-            # 2) Forward pass
+            synthetic_states = torch.randn((batch_size, self.latent_dim), requires_grad=True)
             outputs = self.model(synthetic_states)
             
-            # 3) Use a contrived cluster approach to define a pseudo-loss
-            # Convert outputs to numpy for clustering
+            # Non-differentiable cluster demonstration
             outputs_np = outputs.detach().cpu().numpy()
             kmeans = KMeans(n_clusters=4, n_init=1).fit(outputs_np)
-            
-            # We'll define a fake objective: we want the cluster centers
-            # to be stable near 0.5 in each dimension
-            cluster_centers = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32)
-            desired_center = 0.5
-            pseudo_loss = ((cluster_centers - desired_center)**2).mean()
-            
-            # 4) Backprop
+            # cluster_centers = kmeans.cluster_centers_
+
+            # A toy objective that tries to push outputs ~ 0.5
+            toy_loss = ((outputs - 0.5)**2).mean()
+
             self.optimizer.zero_grad()
-            pseudo_loss.backward()
+            toy_loss.backward()
             self.optimizer.step()
             
-            # 5) Update hidden_state by running the model
             hidden_state = self.model(hidden_state).detach()
         return hidden_state
 
     def generate_signal_for_symbol(self, hidden_state: torch.Tensor, symbol: str) -> float:
         """
-        Return a 'signal' for trading, presumably shaped by the 'world state.'
-        We'll just take a small chunk of the output vector to define a numeric signal.
+        Return a 'signal' for trading, shaped by the 'world state.'
+        We'll interpret the first element from 0..1 => scale to -1..+1
         """
         with torch.no_grad():
             out = self.model(hidden_state)
-        # e.g., interpret the first element as a signal from -1..+1
-        # Actually it's 0..1 from sigmoid, so let's shift & scale
-        raw_val = out[0, 0].item()  # first dimension
-        signal = (raw_val - 0.5) * 2.0  # scale to -1..+1
+        raw_val = out[0, 0].item()
+        signal = (raw_val - 0.5) * 2.0
         return signal
 
 ###############################################################################
-# 3) Minimal Trading Logic (Fictional)
+# 3) Minimal Trading Logic (Mock or Real Alpaca)
 ###############################################################################
 class AlpacaTraderMock:
     """
-    For demonstration, we mock the essential Alpaca calls if not real.
-    (If you have the actual alpaca_trade_api installed, skip this class.)
+    If alpaca is missing, we mock the essential calls. 
     """
     def __init__(self, *args, **kwargs):
         pass
-    async def get_account(self):
+    def get_account(self):
+        # Not async => returns a simple object
         class AccountMock:
             equity = "100000"
             last_equity = "100000"
         return AccountMock()
-    async def get_position(self, symbol: str):
+    def get_position(self, symbol: str):
         return None
-    async def submit_order(self, symbol, qty, side, type, time_in_force):
+    def submit_order(self, symbol, qty, side, type, time_in_force):
         return f"Order({symbol},{qty},{side})"
-    async def close_position(self, symbol: str):
+    def close_position(self, symbol: str):
         pass
-    async def get_latest_price(self, symbol:str):
+    def get_latest_price(self, symbol: str):
         return random.uniform(50.0, 300.0)
 
 ###############################################################################
@@ -226,15 +217,13 @@ class AlpacaTraderMock:
 ###############################################################################
 class QuantumWorldClusterTrader:
     """
-    Final orchestrator that merges:
-    - The imaginative 'WorldSimulator' (WorldNet) for cluster-based evolution
-    - Minimal 'long-only' style trading logic
-    - Pseudo RL approach, but here we rely on the 'world' signal for each symbol
+    - Uses WorldSimulator for cluster-based illusions
+    - Minimal 'long-only' style approach for demonstration
+    - No real RL states for buy/sell, just a threshold-based signal
     """
     def __init__(self, config: dict, logger: logging.Logger):
         self.logger = logger
-        self.api = None
-        # If alpaca installed, use it, else use mock
+        # If real alpaca, do:
         try:
             self.api = tradeapi.REST(
                 key_id=config.get("API_KEY"),
@@ -254,79 +243,72 @@ class QuantumWorldClusterTrader:
         # Evolve the 'world' a bit before we start
         self.hidden_state = self.world_sim.evolve_world(self.hidden_state, steps=3)
 
-    async def get_account(self):
-        return await self.api.get_account()
+    def get_account(self):
+        """
+        The actual Alpaca REST 'get_account()' is synchronous, so no 'await' needed.
+        """
+        return self.api.get_account()
 
-    async def manage_symbol(self, symbol: str, threshold=0.2):
+    def manage_symbol(self, symbol: str, threshold=0.2):
         """
-        For each symbol, we produce a signal from the 'world' net,
-        then if signal>threshold => buy, if signal<-threshold => sell, else hold
+        Not an async method anymore => handle synchronous calls. 
+        Evolve the world => produce signal => place orders
         """
-        # Evolve the world a bit each time
         self.hidden_state = self.world_sim.evolve_world(self.hidden_state, steps=1)
         signal_val = self.world_sim.generate_signal_for_symbol(self.hidden_state, symbol)
         self.logger.info(f"Signal for {symbol}: {signal_val:.4f}")
         
-        acct = await self.get_account()
+        acct = self.get_account()
         eq = float(acct.equity)
         last_eq = float(acct.last_equity)
-        # Check drawdown
         dd = (last_eq - eq)/last_eq if last_eq>0 else 0
         if dd>MAX_DRAWDOWN:
             self.logger.critical(f"Drawdown {dd:.2%} > {MAX_DRAWDOWN:.2%}. Stopping trading.")
             return
         
-        # Trading logic
-        # If above threshold => buy, if below -threshold => sell, else hold
+        # Simple threshold logic
         if signal_val > threshold:
             # BUY
             self.logger.info(f"Placing BUY for {symbol} (signal={signal_val:.4f})")
-            await self.api.submit_order(symbol=symbol, qty=1, side="buy", type="market", time_in_force="gtc")
+            self.api.submit_order(symbol=symbol, qty=1, side="buy", type="market", time_in_force="gtc")
         elif signal_val < -threshold:
             # SELL
             self.logger.info(f"Placing SELL for {symbol} (signal={signal_val:.4f})")
-            # We'll just do short or close
-            await self.api.submit_order(symbol=symbol, qty=1, side="sell", type="market", time_in_force="gtc")
+            self.api.submit_order(symbol=symbol, qty=1, side="sell", type="market", time_in_force="gtc")
         else:
             # HOLD
             self.logger.info(f"HOLD => No action for {symbol}. (signal={signal_val:.4f})")
 
-    async def run(self, symbols: List[str]):
+    def run(self, symbols: List[str]):
         episode=0
         while True:
             self.logger.info("Starting cycle...")
-            tasks=[self.manage_symbol(sym) for sym in symbols]
-            await asyncio.gather(*tasks)
+            for sym in symbols:
+                self.manage_symbol(sym)
             episode += 1
             if episode % 10==0:
-                # We'll “save checkpoint” for the net
                 self.logger.info("Checkpoint => Saving 'WorldNet' weights (mock).")
-            # Sleep
             self.logger.info("Cycle done => sleep 30s.")
-            await asyncio.sleep(30)
+            time.sleep(30)
 
 ###############################################################################
 # 5) Main Entry
 ###############################################################################
-async def main():
+def main():
     global logger
 
-    # 1) Load symbols
     if not os.path.exists(SYMBOL_LIST_FILE):
         logger.error("No symbol list file => create list.txt with symbols.")
         return
     with open(SYMBOL_LIST_FILE,"r") as f:
         symbols=[l.strip().upper() for l in f if l.strip()]
 
-    # 2) Initialize
     cluster_bot = QuantumWorldClusterTrader(config=config, logger=logger)
-
-    # 3) Run loop
-    await cluster_bot.run(symbols)
+    cluster_bot.run(symbols)
 
 if __name__=="__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("User interrupted => shutting down gracefully.")
     except Exception as e:
